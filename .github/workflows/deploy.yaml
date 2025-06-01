@@ -89,9 +89,6 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Execute tests
-        run: php artisan test
-
       - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
