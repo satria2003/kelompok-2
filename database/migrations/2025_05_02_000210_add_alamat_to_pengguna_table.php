@@ -10,19 +10,20 @@ return new class extends Migration
      * Run the migrations.
      */
     public function up()
-{
-    Schema::table('pengguna', function (Blueprint $table) {
-       // $table->string('alamat')->nullable();
-    });
-}
+    {
+        if (!Schema::hasColumn('pengguna', 'alamat')) {
+            Schema::table('pengguna', function (Blueprint $table) {
+                $table->string('alamat')->nullable()->after('password');
+            });
+        }
+    }
 
-public function down()
-{
-    Schema::table('pengguna', function (Blueprint $table) {
-       // $table->dropColumn('alamat');
-    });
-}
-
-
- 
+    public function down()
+    {
+        if (Schema::hasColumn('pengguna', 'alamat')) {
+            Schema::table('pengguna', function (Blueprint $table) {
+                $table->dropColumn('alamat');
+            });
+        }
+    }
 };
