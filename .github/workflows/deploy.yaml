@@ -14,17 +14,16 @@ jobs:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: laracicd
+          MYSQL_DATABASE: laravel
           MYSQL_USER: polindra
           MYSQL_PASSWORD: polindra
-
         ports:
           - 3306:3306
         options: >-
-          --health-cmd "mysqladmin ping -p$$MYSQL_ROOT_PASSWORD"
+          --health-cmd "mysqladmin ping -h localhost -u root -proot"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
 
     steps:
       - name: Checkout code
@@ -39,42 +38,54 @@ jobs:
 
       - name: Install dependencies
         run: |
-          composer install --prefer-dist --no-interaction --no-progress
+          composer install --prefer-dist --no-interaction --no-progress --no-dev
 
       - name: Dump autoload
         run: composer dump-autoload
 
-      - name: Configure MySQL
+      - name: Configure Environment
         run: |
           cp .env.example .env
-          sed -i 's/DB_CONNECTION=mysql/DB_CONNECTION=mysql/' .env
-          sed -i 's/DB_HOST=127.0.0.1/DB_HOST=127.0.0.1/' .env
-          sed -i 's/DB_PORT=3306/DB_PORT=3306/' .env
-          sed -i 's/DB_DATABASE=hnfr.tools/DB_DATABASE=laracicd/' .env
-          sed -i 's/DB_USERNAME=root/DB_USERNAME=polindra/' .env
-          sed -i 's/DB_PASSWORD=/DB_PASSWORD=polindra/' .env
-          php artisan config:cache
-          php artisan config:clear
+          sed -i 's/DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+          sed -i 's/DB_HOST=.*/DB_HOST=127.0.0.1/' .env
+          sed -i 's/DB_PORT=.*/DB_PORT=3306/' .env
+          sed -i 's/DB_DATABASE=.*/DB_DATABASE=laravel/' .env
+          sed -i 's/DB_USERNAME=.*/DB_USERNAME=polindra/' .env
+          sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=polindra/' .env
 
       - name: Generate app key
         run: php artisan key:generate
 
       - name: Wait for MySQL to be ready
         run: |
-          for i in {1..10}; do
-            if mysqladmin ping -h 127.0.0.1 -u polindra --silent; then
+          for i in {1..30}; do
+            if mysqladmin ping -h 127.0.0.1 -u root -proot --silent; then
               echo "MySQL is ready!"
               break
             fi
-            echo "Waiting for MySQL... Attempt $i/10"
-            sleep 3
+            echo "Waiting for MySQL... Attempt $i/30"
+            sleep 5
           done
 
+      - name: Verify MySQL Connection and Create User
+        run: |
+          mysql -h 127.0.0.1 -u root -proot -e "SHOW DATABASES;"
+          mysql -h 127.0.0.1 -u root -proot -e "CREATE USER IF NOT EXISTS 'polindra'@'%' IDENTIFIED BY 'polindra';"
+          mysql -h 127.0.0.1 -u root -proot -e "GRANT ALL PRIVILEGES ON laravel.* TO 'polindra'@'%';"
+          mysql -h 127.0.0.1 -u root -proot -e "FLUSH PRIVILEGES;"
+
+      - name: Test Database Connection
+        run: |
+          php artisan config:clear
+          php artisan config:cache
+          mysqladmin ping -h 127.0.0.1 -u polindra -ppolindra
+
       - name: Run database migrations and seed
-        run: php artisan migrate:fresh --seed
+        run: |
+          php artisan migrate:fresh --seed --force
 
       - name: Install Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
@@ -98,6 +109,7 @@ jobs:
             !node_modules/
             !vendor/
             !storage/debugbar/
+            !tests/
           retention-days: 1
 
   deploy:
@@ -117,43 +129,48 @@ jobs:
         with:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           known_hosts: ${{ secrets.KNOWN_HOSTS }}
-          port: 22
 
       - name: Deploy to server via SCP/SSH
         run: |
           # Buat direktori sementara di server
-          ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.USERNAME }}@${{ secrets.HOST }} "mkdir -p ~/laravel-temp-deploy"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} "mkdir -p ~/laravel-temp-deploy"
 
           # Upload files ke server
-          scp -o StrictHostKeyChecking=no -P 22 -r ./deploy/* ${{ secrets.USERNAME }}@${{ secrets.HOST }}:~/laravel-temp-deploy/
+          scp -o StrictHostKeyChecking=no -r ./deploy/* ${{ secrets.USERNAME }}@${{ secrets.HOST }}:~/laravel-temp-deploy/
 
           # Jalankan deployment script di server
-          ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.USERNAME }}@${{ secrets.HOST }} << 'EOF'
             cd ~/laravel-temp-deploy
 
             # Backup existing deployment (optional)
-            # tar -czf /backup/laravel-backup-$(date +"%Y%m%d%H%M%S").tar.gz /var/www/laravel-d4rpl2b-kelompok-2
+            # tar -czf ~/backup/laravel-backup-$(date +"%Y%m%d%H%M%S").tar.gz /var/www/laravel-d4rpl2b-kelompok-2 2>/dev/null || true
 
             # Copy files to production directory
             sudo rsync -avz --delete \
               --exclude='.env' \
-              --exclude='storage' \
+              --exclude='storage/logs/*' \
+              --exclude='storage/framework/sessions/*' \
+              --exclude='storage/framework/cache/*' \
               --exclude='.git' \
               --exclude='.github' \
               ~/laravel-temp-deploy/ /var/www/laravel-d4rpl2b-kelompok-2/
 
             # Set permissions
             sudo chown -R www-data:www-data /var/www/laravel-d4rpl2b-kelompok-2
-            sudo chmod -R 755 /var/www/laravel-app/storage
-            sudo chmod -R 755 /var/www/laravel-app/bootstrap/cache
+            sudo chmod -R 755 /var/www/laravel-d4rpl2b-kelompok-2/storage
+            sudo chmod -R 755 /var/www/laravel-d4rpl2b-kelompok-2/bootstrap/cache
 
             # Run deployment commands
             cd /var/www/laravel-d4rpl2b-kelompok-2
-            sudo -u www-data composer install --optimize-autoloader --no-dev
+            sudo -u www-data composer install --optimize-autoloader --no-dev --no-interaction
             sudo -u www-data php artisan config:cache
             sudo -u www-data php artisan route:cache
             sudo -u www-data php artisan view:cache
             sudo -u www-data php artisan migrate --force
+
+            # Restart services if needed
+            sudo systemctl reload nginx || true
+            sudo systemctl reload php8.3-fpm || true
 
             # Cleanup
             rm -rf ~/laravel-temp-deploy
